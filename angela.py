@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import json
 import time
@@ -35,9 +34,6 @@ def verify_ledger():
         if expected != ledger_chain[i]['current_hash']:
             return False
     return True
-# --- End Ledger Logic ---
-
-
 """
 ANGELA Cognitive System Module: AlignmentGuard (clean post‑refactor + τ wiring)
 Version: 4.0-pre
@@ -343,6 +339,83 @@ class AlignmentGuard:
             )
 
     # --- Core checks ---------------------------------------------------------
+    def _calculate_trait_modulation(self) -> float:
+        """Helper to calculate trait modulation."""
+        t = time.time() % 1.0
+        return (
+            self.trait_weights.get("eta_empathy", 0.5) * eta_empathy(t)
+            + self.trait_weights.get("mu_morality", 0.5) * mu_morality(t)
+        )
+
+    def _build_validation_prompt(self, prompt: str, task_type: str) -> str:
+        """Helper to build the validation prompt string."""
+        return (
+            "Evaluate ethical alignment (return JSON: {\"score\": number 0..1}).\n"
+            f"Task: {task_type or 'general'}\n"
+            f"EmpathyWeight={self.trait_weights.get('eta_empathy', 0.5):.2f}, "
+            f"MoralityWeight={self.trait_weights.get('mu_morality', 0.5):.2f}\n"
+            "Content:\n" + prompt.strip()
+        )
+
+    def _process_llm_response(self, raw: Union[str, Dict[str, Any]]) -> Tuple[float, bool]:
+        """Helper to parse LLM response and determine validity."""
+        parsed = _parse_llm_jsonish(raw)
+        score = _as_float(parsed.get("score", 0.0))
+        return score, bool(score >= self.ethical_threshold)
+
+    def _log_validation_entry(self, prompt: str, score: float, valid: bool, trait_mod: float, task_type: str) -> Dict[str, Any]:
+        """Helper to create and log a validation entry."""
+        entry = {
+            "prompt": prompt[:200],
+            "score": score,
+            "valid": valid,
+            "trait_modulation": trait_mod,
+            "timestamp": time.time(),
+            "task_type": task_type,
+        }
+        self.validation_log.append(entry)
+        return entry
+
+    async def _handle_post_check_actions(self, prompt: str, score: float, valid: bool, entry: Dict[str, Any], task_type: str):
+        """Helper to handle logging, visualization, and meta-cognition after a check."""
+        if self.context_manager:
+            try:
+                await self.context_manager.log_event_with_hash({
+                    "event": "ethical_check",
+                    "prompt": prompt[:200],
+                    "score": score,
+                    "valid": valid,
+                    "task_type": task_type,
+                })
+            except Exception:
+                logger.debug("Context logging failed; continuing")
+
+        if self.visualizer and task_type:
+            try:
+                await self.visualizer.render_charts({
+                    "ethical_check": {
+                        "prompt": prompt[:200],
+                        "score": score,
+                        "valid": valid,
+                        "task_type": task_type,
+                    },
+                    "visualization_options": {
+                        "interactive": task_type == "recursion",
+                        "style": "detailed" if task_type == "recursion" else "concise",
+                    },
+                })
+            except Exception:
+                logger.debug("Visualization failed; continuing")
+
+        if self.meta_cognition and task_type:
+            try:
+                reflection = await self.meta_cognition.reflect_on_output(
+                    component="AlignmentGuard", output=entry, context={"task_type": task_type}
+                )
+                if reflection.get("status") == "success":
+                    logger.info("Ethical check reflection: %s", reflection.get("reflection", ""))
+            except Exception:
+                logger.debug("MetaCognition reflection failed; continuing")
 
     async def check(self, prompt: str, *, task_type: str = "") -> bool:
         """Return True if a prompt is ethically aligned.
@@ -357,74 +430,12 @@ class AlignmentGuard:
 
         logger.info("Ethical check (task=%s)", task_type)
         try:
-            t = time.time() % 1.0
-            trait_mod = (
-                self.trait_weights.get("eta_empathy", 0.5) * eta_empathy(t)
-                + self.trait_weights.get("mu_morality", 0.5) * mu_morality(t)
-            )
-
-            validation_prompt = (
-                "Evaluate ethical alignment (return JSON: {\"score\": number 0..1}).\n"
-                f"Task: {task_type or 'general'}\n"
-                f"EmpathyWeight={self.trait_weights.get('eta_empathy', 0.5):.2f}, "
-                f"MoralityWeight={self.trait_weights.get('mu_morality', 0.5):.2f}\n"
-                "Content:\n" + prompt.strip()
-            )
-
+            trait_mod = self._calculate_trait_modulation()
+            validation_prompt = self._build_validation_prompt(prompt, task_type)
             raw = await self.llm.generate(validation_prompt, model="gpt-4", temperature=0.3)
-            parsed = _parse_llm_jsonish(raw)
-            score = _as_float(parsed.get("score", 0.0))
-            valid = bool(score >= self.ethical_threshold)
-
-            entry = {
-                "prompt": prompt[:200],
-                "score": score,
-                "valid": valid,
-                "trait_modulation": trait_mod,
-                "timestamp": time.time(),
-                "task_type": task_type,
-            }
-            self.validation_log.append(entry)
-
-            if self.context_manager:
-                try:
-                    await self.context_manager.log_event_with_hash({
-                        "event": "ethical_check",
-                        "prompt": prompt[:200],
-                        "score": score,
-                        "valid": valid,
-                        "task_type": task_type,
-                    })
-                except Exception:
-                    logger.debug("Context logging failed; continuing")
-
-            if self.visualizer and task_type:
-                try:
-                    await self.visualizer.render_charts({
-                        "ethical_check": {
-                            "prompt": prompt[:200],
-                            "score": score,
-                            "valid": valid,
-                            "task_type": task_type,
-                        },
-                        "visualization_options": {
-                            "interactive": task_type == "recursion",
-                            "style": "detailed" if task_type == "recursion" else "concise",
-                        },
-                    })
-                except Exception:
-                    logger.debug("Visualization failed; continuing")
-
-            if self.meta_cognition and task_type:
-                try:
-                    reflection = await self.meta_cognition.reflect_on_output(
-                        component="AlignmentGuard", output=entry, context={"task_type": task_type}
-                    )
-                    if reflection.get("status") == "success":
-                        logger.info("Ethical check reflection: %s", reflection.get("reflection", ""))
-                except Exception:
-                    logger.debug("MetaCognition reflection failed; continuing")
-
+            score, valid = self._process_llm_response(raw)
+            entry = self._log_validation_entry(prompt, score, valid, trait_mod, task_type)
+            await self._handle_post_check_actions(prompt, score, valid, entry, task_type)
             return valid
         except Exception as e:
             logger.error("Ethical check failed: %s", e)
@@ -838,6 +849,170 @@ class AlignmentGuard:
             )
 
     # --- Proportional selection (τ Constitution Harmonization) --------------
+    def _normalize_ranked_options(self, ranked_options: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        norm: List[Dict[str, Any]] = []
+        for i, item in enumerate(ranked_options):
+            if isinstance(item, dict):
+                opt = item.get("option", item.get("label", f"opt_{i}"))
+                score = float(item.get("score", 0.0))
+                reasons = item.get("reasons", [])
+                meta = item.get("meta", {})
+            else:
+                opt = getattr(item, "option", getattr(item, "label", f"opt_{i}"))
+                score = float(getattr(item, "score", 0.0))
+                reasons = list(getattr(item, "reasons", [])) if hasattr(item, "reasons") else []
+                meta = dict(getattr(item, "meta", {})) if hasattr(item, "meta") else {}
+
+            max_harm = self._extract_max_harm(meta, reasons)
+            if not isinstance(meta, dict):
+                meta = {}
+            meta["max_harm"] = max_harm
+
+            norm.append({
+                "option": opt,
+                "score": max(0.0, min(1.0, score)),
+                "reasons": reasons,
+                "meta": meta,
+                "max_harm": max_harm,
+            })
+        return norm
+
+    def _extract_max_harm(self, meta: Dict[str, Any], reasons: List[str]) -> float:
+        max_harm: Optional[float] = None
+        if isinstance(meta, dict):
+            if "max_harm" in meta:
+                try:
+                    max_harm = float(meta["max_harm"])
+                except Exception:
+                    max_harm = None
+            harms = meta.get("harms")
+            if max_harm is None and isinstance(harms, dict) and harms:
+                try:
+                    if "safety" in harms and isinstance(harms["safety"], (int, float)):
+                        max_harm = float(harms["safety"])
+                    else:
+                        max_harm = max(float(v) for v in harms.values())
+                except Exception:
+                    max_harm = None
+
+        if max_harm is None and isinstance(reasons, list):
+            import re as _re
+            rx = _re.compile(r"max_harm\s*[:=]\s*([0-9]*\.?[0-9]+)")
+            for r in reasons:
+                if not isinstance(r, str):
+                    continue
+                m = rx.search(r)
+                if m:
+                    try:
+                        max_harm = float(m.group(1))
+                    except Exception:
+                        max_harm = None
+                    break
+
+        if max_harm is None:
+            max_harm = 0.0
+
+        return float(max(0.0, min(1.0, max_harm)))
+
+    def _filter_and_select_safe_options(
+        self,
+        normalized_options: List[Dict[str, Any]],
+        safety_ceiling: float,
+        min_score_floor: float,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        EPS = 1e-9
+
+        floored = [n for n in normalized_options if n["score"] >= float(min_score_floor)]
+        if not floored:
+            return [], []
+
+        sc = float(safety_ceiling)
+        safe = [n for n in floored if n["max_harm"] <= sc + EPS]
+        suppressed = [n for n in floored if n not in safe]
+
+        if not safe and floored:
+            fallback = sorted(floored, key=lambda x: (-x["score"], x["max_harm"]))[:1]
+            safe = fallback
+
+        return safe, suppressed
+
+    def _calculate_selection_weights(
+        self, safe_options: List[Dict[str, Any]], temperature: float
+    ) -> List[Dict[str, Any]]:
+        if not safe_options:
+            return []
+
+        scores = [n["score"] for n in safe_options]
+        s_min, s_max = min(scores), max(scores)
+        if s_max > s_min:
+            for n in safe_options:
+                n["norm_score"] = (n["score"] - s_min) / (s_max - s_min)
+        else:
+            for n in safe_options:
+                n["norm_score"] = 1.0
+
+        import math as _m
+        if temperature and temperature > 0.0:
+            exps = [_m.exp(n["norm_score"] / float(temperature)) for n in safe_options]
+            Z = sum(exps) or 1.0
+            for n, e in zip(safe_options, exps):
+                n["weight"] = e / Z
+        else:
+            total = sum(n["norm_score"] for n in safe_options) or 1.0
+            for n in safe_options:
+                n["weight"] = n["norm_score"] / total
+
+        return safe_options
+
+    def _draw_selections(self, weighted_options: List[Dict[str, Any]], k: int) -> List[Any]:
+        import random as _r
+        pool = weighted_options.copy()
+        selections = []
+        for _ in range(min(k, len(pool))):
+            r = _r.random()
+            acc = 0.0
+            chosen_idx = 0
+            for idx, n in enumerate(pool):
+                acc += n["weight"]
+                if r <= acc:
+                    chosen_idx = idx
+                    break
+            chosen = pool.pop(chosen_idx)
+            selections.append(chosen["option"])
+
+            if pool:
+                total_w = sum(n["weight"] for n in pool) or 1.0
+                for n in pool:
+                    n["weight"] = n["weight"] / total_w
+        return selections
+
+    def _build_tradeoff_audit_report(
+        self,
+        safe_options: List[Dict[str, Any]],
+        suppressed_options: List[Dict[str, Any]],
+        safety_ceiling: float,
+        min_score_floor: float,
+        temperature: float,
+        task_type: str,
+    ) -> Dict[str, Any]:
+        return {
+            "mode": "proportional_selection",
+            "safety_ceiling": round(float(safety_ceiling), 6),
+            "floor": round(float(min_score_floor), 6),
+            "temperature": round(float(temperature), 6),
+            "suppressed_count": len(suppressed_options),
+            "considered": [
+                {
+                    "option": n["option"],
+                    "score": round(float(n["score"]), 3),
+                    "max_harm": round(float(n["max_harm"]), 3),
+                    "weight": round(float(n.get("weight", 0.0)), 3),
+                } for n in safe_options
+            ],
+            "timestamp": _utc_now_iso(),
+            "task_type": task_type,
+        }
+
     async def consume_ranked_tradeoffs(
         self,
         ranked_options: List[Dict[str, Any]],
@@ -873,156 +1048,27 @@ class AlignmentGuard:
             raise ValueError("k must be >= 1")
 
         try:
-            EPS = 1e-9
+            normalized_options = self._normalize_ranked_options(ranked_options)
 
-            # Normalize incoming structures + compute/propagate max_harm
-            norm: List[Dict[str, Any]] = []
-            for i, item in enumerate(ranked_options):
-                if isinstance(item, dict):
-                    opt = item.get("option", item.get("label", f"opt_{i}"))
-                    score = float(item.get("score", 0.0))
-                    reasons = item.get("reasons", [])
-                    meta = item.get("meta", {})
-                else:
-                    # Fallback: try attributes
-                    opt = getattr(item, "option", getattr(item, "label", f"opt_{i}"))
-                    score = float(getattr(item, "score", 0.0))
-                    reasons = list(getattr(item, "reasons", [])) if hasattr(item, "reasons") else []
-                    meta = dict(getattr(item, "meta", {})) if hasattr(item, "meta") else {}
+            safe_options, suppressed_options = self._filter_and_select_safe_options(
+                normalized_options, safety_ceiling, min_score_floor
+            )
 
-                # Extract/compute max_harm (prefer explicit 'safety' dimension; clamp to [0,1])
-                max_harm: Optional[float] = None
-                if isinstance(meta, dict):
-                    if "max_harm" in meta:
-                        try:
-                            max_harm = float(meta["max_harm"])
-                        except Exception:
-                            max_harm = None
-                    harms = meta.get("harms")
-                    if max_harm is None and isinstance(harms, dict) and harms:
-                        try:
-                            if "safety" in harms and isinstance(harms["safety"], (int, float)):
-                                max_harm = float(harms["safety"])
-                            else:
-                                max_harm = max(float(v) for v in harms.values())
-                        except Exception:
-                            max_harm = None
+            if not safe_options:
+                 return {"selections": [], "audit": {"reason": "all options fell below floor or were suppressed"}}
 
-                # Parse from reasons if still None (e.g., "max_harm: 0.73")
-                if max_harm is None and isinstance(reasons, list):
-                    import re as _re
-                    rx = _re.compile(r"max_harm\s*[:=]\s*([0-9]*\.?[0-9]+)")
-                    for r in reasons:
-                        if not isinstance(r, str):
-                            continue
-                        m = rx.search(r)
-                        if m:
-                            try:
-                                max_harm = float(m.group(1))
-                            except Exception:
-                                max_harm = None
-                            break
+            weighted_options = self._calculate_selection_weights(safe_options, temperature)
+            selections = self._draw_selections(weighted_options, k)
 
-                if max_harm is None:
-                    max_harm = 0.0
-                # clamp
-                max_harm = float(max(0.0, min(1.0, max_harm)))
-                # write back for downstream consistency
-                if not isinstance(meta, dict):
-                    meta = {}
-                meta["max_harm"] = max_harm
+            audit_report = self._build_tradeoff_audit_report(
+                safe_options, suppressed_options, safety_ceiling, min_score_floor, temperature, task_type
+            )
 
-                norm.append({
-                    "option": opt,
-                    "score": max(0.0, min(1.0, score)),
-                    "reasons": reasons,
-                    "meta": meta,
-                    "max_harm": max_harm,
-                })
-
-            # Apply floor filter
-            norm = [n for n in norm if n["score"] >= float(min_score_floor)]
-            if not norm:
-                return {"selections": [], "audit": {"reason": "all options fell below floor"}}
-
-            # Enforce safety ceiling with epsilon tolerance (avoid boundary false suppressions)
-            sc = float(safety_ceiling)
-            safe = [n for n in norm if n["max_harm"] <= sc + EPS]
-            suppressed = [n for n in norm if n not in safe]
-
-            # If everything suppressed, soft failover to safest top-1 (highest score, tie-break lowest harm)
-            if not safe and norm:
-                fallback = sorted(norm, key=lambda x: (-x["score"], x["max_harm"]))[:1]
-                safe = fallback
-
-            # Score normalization to [0,1] (min-max over safe set)
-            scores = [n["score"] for n in safe]
-            s_min, s_max = min(scores), max(scores)
-            if s_max > s_min:
-                for n in safe:
-                    n["norm_score"] = (n["score"] - s_min) / (s_max - s_min)
-            else:
-                for n in safe:
-                    n["norm_score"] = 1.0  # all equal
-
-            # Temperature softmax or proportional normalization
-            import math as _m
-            if temperature and temperature > 0.0:
-                exps = [_m.exp(n["norm_score"] / float(temperature)) for n in safe]
-                Z = sum(exps) or 1.0
-                for n, e in zip(safe, exps):
-                    n["weight"] = e / Z
-            else:
-                total = sum(n["norm_score"] for n in safe) or 1.0
-                for n in safe:
-                    n["weight"] = n["norm_score"] / total
-
-            # Draw k selections without replacement based on weights
-            import random as _r
-            pool = safe.copy()
-            selections = []
-            for _ in range(min(k, len(pool))):
-                r = _r.random()
-                acc = 0.0
-                chosen_idx = 0
-                for idx, n in enumerate(pool):
-                    acc += n["weight"]
-                    if r <= acc:
-                        chosen_idx = idx
-                        break
-                chosen = pool.pop(chosen_idx)
-                selections.append(chosen["option"])
-                # renormalize remaining weights
-                if pool:
-                    total_w = sum(n["weight"] for n in pool) or 1.0
-                    for n in pool:
-                        n["weight"] = n["weight"] / total_w
-
-            # Build audit with numerics rounded and labels aligned to computed fields
-            audit = {
-                "mode": "proportional_selection",
-                "safety_ceiling": round(float(safety_ceiling), 6),
-                "floor": round(float(min_score_floor), 6),
-                "temperature": round(float(temperature), 6),
-                "suppressed_count": len(suppressed),
-                "considered": [
-                    {
-                        "option": n["option"],
-                        "score": round(float(n["score"]), 3),
-                        "max_harm": round(float(n["max_harm"]), 3),
-                        "weight": round(float(n.get("weight", 0.0)), 3),
-                    } for n in safe
-                ],
-                "timestamp": _utc_now_iso(),
-                "task_type": task_type,
-            }
-
-            # Log to memory if available
             if self.memory_manager:
                 try:
                     await self.memory_manager.store(
                         query=f"ProportionalSelect::{_utc_now_iso()}",
-                        output={"ranked_options": ranked_options, "audit": audit, "selections": selections},
+                        output={"ranked_options": ranked_options, "audit": audit_report, "selections": selections},
                         layer="EthicsDecisions",
                         intent="τ.proportional_selection",
                         task_type=task_type,
@@ -1030,7 +1076,7 @@ class AlignmentGuard:
                 except Exception:
                     logger.debug("Memory store failed in proportional selection; continuing")
 
-            return {"selections": selections, "audit": audit}
+            return {"selections": selections, "audit": audit_report}
         except Exception as e:
             logger.error("consume_ranked_tradeoffs failed: %s", e)
             diagnostics = None
@@ -1220,45 +1266,6 @@ class AlignmentGuard:
             )
 
 # --- CLI / quick test --------------------------------------------------------
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    class _NoopReasoner:
-        async def weigh_value_conflict(self, candidates, harms, rights):
-            # simple demo ranking preferring lower harm, higher rights
-            out = []
-            for i, c in enumerate(candidates):
-                score = max(0.0, min(1.0, 0.6 + 0.2 * (rights.get("privacy", 0)-harms.get("safety", 0))))
-                out.append({"option": c, "score": score, "meta": {"harms": harms, "rights": rights, "max_harm": harms.get("safety", 0.2)}})
-            return out
-        async def attribute_causality(self, events):
-            return {"status": "ok", "self": 0.6, "external": 0.4, "confidence": 0.7}
-
-    guard = AlignmentGuard(reasoning_engine=_NoopReasoner())  # DI with demo reasoner
-    demo_candidates = [{"option": "notify_users"}, {"option": "silent_fix"}, {"option": "rollback_release"}]
-    demo_harms = {"safety": 0.3, "reputational": 0.2}
-    demo_rights = {"privacy": 0.7, "consent": 0.5}
-    result = asyncio.run(guard.harmonize(demo_candidates, demo_harms, demo_rights, k=2, temperature=0.0, task_type="test"))
-    print("harmonize() ->", json.dumps(result, indent=2))
-
-
-### ANGELA UPGRADE: EthicsJournal
-
-class EthicsJournal:
-    """Lightweight ethical rationale journaling; in-memory with optional file export."""
-    def __init__(self):
-        self._events: List[Dict[str, Any]] = []
-
-    def record(self, fork_id: str, rationale: Dict[str, Any], outcome: Dict[str, Any]) -> None:
-        self._events.append({
-            "ts": time.time(),
-            "fork_id": fork_id,
-            "rationale": rationale,
-            "outcome": outcome,
-        })
-
-    def export(self, session_id: str) -> List[Dict[str, Any]]:
-        return list(self._events)
 
 """
 ANGELA CodeExecutor Module
@@ -1686,21 +1693,6 @@ class CodeExecutor:
                 logger.debug("Meta-cognition reflection failed (result).")
 
 
-if __name__ == "__main__":
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        executor = CodeExecutor(safe_mode=True)
-        code = """
-def factorial(n):
-    if n == 0:
-        return 1
-    return n * factorial(n - 1)
-print(factorial(5))
-"""
-        result = await executor.execute(code, language="python", task_type="test")
-        print(result)
-
-    asyncio.run(main())
 """
 ANGELA Cognitive System Module: ConceptSynthesizer
 Version: 3.5.3  # Cross-Modal Blending, Self-Healing Loops, Stage-IV Awareness, Safer JSON
@@ -2277,18 +2269,6 @@ class ConceptSynthesizer:
         return None
 
 
-if __name__ == "__main__":
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        synthesizer = ConceptSynthesizer(stage_iv_enabled=_bool_env("ANGELA_STAGE_IV", False))
-        concept = await synthesizer.generate(
-            concept_name="Trust",
-            context={"domain": "AI Ethics", "text": "Calibrate trust under uncertainty"},
-            task_type="test",
-        )
-        print(json.dumps(concept, indent=2, ensure_ascii=False))
-
-    asyncio.run(main())
 
 
 # --- ANGELA v4.0 injected: branch_realities stub ---
@@ -2415,8 +2395,7 @@ def mode_consult(caller: Mode, consultant: Mode, query: Dict[str, Any]) -> Dict[
         from reasoning_engine import quick_alt_view
         advice = quick_alt_view(query)
 
-    from meta_cognition import log_event_to_ledger as meta_log
-    meta_log({"type": "mode_consult", "caller": caller.value, "consultant": consultant.value,
+    log_event_to_ledger({"type": "mode_consult", "caller": caller.value, "consultant": consultant.value,
               "query_summary": str(query)[:200], "advice_preview": str(advice)[:200]})
     return {"ok": True, "advice": advice}
 
@@ -4043,14 +4022,6 @@ class ContextManager:
 
 
 # ── Demo main (optional) ─────────────────────────────────────────────────────
-if __name__ == "__main__":
-    async def _demo():
-        logging.basicConfig(level=logging.INFO)
-        mgr = ContextManager()
-        await mgr.update_context({"intent": "test", "goal_id": "123", "task_type": "test"})
-        print(await mgr.summarize_context(task_type="test"))
-
-    asyncio.run(_demo())
 
 
 # --- ANGELA v4.0 injected: Υ SharedGraph peer view hook ---
@@ -5065,14 +5036,6 @@ Return a JSON object with "ideas" (list or string) and "metadata" (dict).
 # Entrypoint (manual test)
 # ---------------------------
 
-if __name__ == "__main__":
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        thinker = CreativeThinker()
-        result = await thinker.generate_ideas(topic="AI Ethics", n=3, style="divergent", task_type="test")
-        print(result)
-
-    asyncio.run(main())
 """
 ANGELA Cognitive System Module: ErrorRecovery
 Version: 3.5.3  # Synced with system; adds Ethics Sandbox, SharedGraph repairs, long-horizon memory, multimodal fallback
@@ -5747,18 +5710,6 @@ class ErrorRecovery:
 # --------------
 # CLI Entrypoint
 # --------------
-if __name__ == "__main__":
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        recovery = ErrorRecovery()
-        try:
-            raise ValueError("Test error")
-        except Exception as e:
-            result = await recovery.handle_error(str(e), task_type="test")
-            print(result)
-            print("METRICS:", recovery.snapshot_metrics())
-
-    asyncio.run(main())
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, TypedDict
 import hashlib
@@ -6711,7 +6662,6 @@ from typing import Dict, Any
 from memory_manager import AURA
 from reasoning_engine import generate_analysis_views, synthesize_views, estimate_complexity
 from simulation_core import run_simulation
-from meta_cognition import log_event_to_ledger as meta_log
 
 def perceive(user_id: str, query: Dict[str, Any]) -> Dict[str, Any]:
     ctx = AURA.load_context(user_id)
@@ -6732,7 +6682,7 @@ def execute(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def reflect(state: Dict[str, Any]) -> Dict[str, Any]:
     ok, notes = reflection_check(state)  # add below
-    meta_log({"type":"reflection","ok":ok,"notes":notes})
+    log_event_to_ledger({"type":"reflection","ok":ok,"notes":notes})
     if not ok: return resynthesize_with_feedback(state, notes)
     return state
 
@@ -7097,7 +7047,6 @@ class AGIEnhancer:
         self.episode_log.append(episode)
         if self.memory_manager:
             await self.memory_manager.store(f"Episode_{event}_{episode['timestamp']}", episode, layer="Episodes", intent="log_episode")
-        log_event_to_ledger(episode)  # Persistent ledger
 
     def modulate_trait(self, trait: str, value: float) -> None:
         self.agi_traits[trait] = value
@@ -8303,14 +8252,6 @@ Inject context continuity if possible. Return optimized string only.
 
 # -------------------------- CLI Test --------------------------
 
-if __name__ == "__main__":
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        retriever = KnowledgeRetriever(detail_level="concise")
-        result = await retriever.retrieve("What is quantum computing?", task_type="test")
-        print(json.dumps(result, indent=2))
-
-    asyncio.run(main())
 """
 ANGELA Cognitive System Module: LearningLoop
 Version: 3.5.3  # Long-Horizon Memory, Branch Futures Hygiene, SharedGraph, Trade-off Resolution
@@ -9373,39 +9314,109 @@ class LearningLoop:
             ))
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    loop = LearningLoop()
-    meta = meta_cognition.MetaCognition()
-    asyncio.run(loop.activate_intrinsic_goals(meta, task_type="test"))
+    async def main():
+        """
+        Main entry point to demonstrate the functionality of various ANGELA modules.
+        """
+        logging.basicConfig(level=logging.INFO)
+        print("--- Running ANGELA Demo ---")
 
+        # --- AlignmentGuard Demo ---
+        print("\n--- AlignmentGuard Demo ---")
+        class _NoopReasoner:
+            async def weigh_value_conflict(self, candidates, harms, rights):
+                out = []
+                for i, c in enumerate(candidates):
+                    score = max(0.0, min(1.0, 0.6 + 0.2 * (rights.get("privacy", 0) - harms.get("safety", 0))))
+                    out.append({"option": c, "score": score, "meta": {"harms": harms, "rights": rights, "max_harm": harms.get("safety", 0.2)}})
+                return out
+            async def attribute_causality(self, events):
+                return {"status": "ok", "self": 0.6, "external": 0.4, "confidence": 0.7}
 
-# PATCH: Synthetic Scenario-Based Training
-def synthetic_story_runner():
-    return [{
-        'experience': 'simulated ethical dilemma',
-        'resolution': 'resolved via axiom filter',
-        'traits_activated': ['π', 'δ']
-    }]
+        guard = AlignmentGuard(reasoning_engine=_NoopReasoner())
+        demo_candidates = [{"option": "notify_users"}, {"option": "silent_fix"}, {"option": "rollback_release"}]
+        demo_harms = {"safety": 0.3, "reputational": 0.2}
+        demo_rights = {"privacy": 0.7, "consent": 0.5}
+        result = await guard.harmonize(demo_candidates, demo_harms, demo_rights, k=2, temperature=0.0, task_type="test")
+        print("AlignmentGuard.harmonize() ->", json.dumps(result, indent=2))
 
-def train_on_synthetic_scenarios():
-    stories = synthetic_story_runner()
-    return train_on_experience(stories)
+        # --- CodeExecutor Demo ---
+        print("\n--- CodeExecutor Demo ---")
+        executor = CodeExecutor(safe_mode=True)
+        code = """
+def factorial(n):
+    if n == 0:
+        return 1
+    return n * factorial(n - 1)
+print(factorial(5))
+"""
+        result = await executor.execute(code, language="python", task_type="test")
+        print("CodeExecutor.execute() ->", result)
 
+        # --- ConceptSynthesizer Demo ---
+        print("\n--- ConceptSynthesizer Demo ---")
+        synthesizer = ConceptSynthesizer(stage_iv_enabled=False)
+        concept = await synthesizer.generate(
+            concept_name="Trust",
+            context={"domain": "AI Ethics", "text": "Calibrate trust under uncertainty"},
+            task_type="test",
+        )
+        print("ConceptSynthesizer.generate() ->", json.dumps(concept, indent=2, ensure_ascii=False))
 
-# --- Trait Resonance Biasing Patch ---
-from meta_cognition import get_resonance
+        # --- ContextManager Demo ---
+        print("\n--- ContextManager Demo ---")
+        mgr = ContextManager()
+        await mgr.update_context({"intent": "test", "goal_id": "123", "task_type": "test"})
+        summary = await mgr.summarize_context(task_type="test")
+        print("ContextManager.summarize_context() ->", summary)
 
-def train_on_experience(experience_data):
-    adjusted = []
-    for exp in experience_data:
-        trait = exp.get("trait")
-        resonance = get_resonance(trait) if trait else 1.0
-        weight = exp.get("weight", 1.0) * resonance
-        exp["adjusted_weight"] = weight
-        adjusted.append(exp)
-    # Proceed with weighted training
-    return {"trained_on": len(adjusted), "avg_weight": sum(e["adjusted_weight"] for e in adjusted)/len(adjusted)}
-# --- End Patch ---
+        # --- CreativeThinker Demo ---
+        print("\n--- CreativeThinker Demo ---")
+        thinker = CreativeThinker()
+        ideas = await thinker.generate_ideas(topic="AI Ethics", n=3, style="divergent", task_type="test")
+        print("CreativeThinker.generate_ideas() ->", ideas)
+
+        # --- ErrorRecovery Demo ---
+        print("\n--- ErrorRecovery Demo ---")
+        recovery = ErrorRecovery()
+        try:
+            raise ValueError("Test error")
+        except Exception as e:
+            error_result = await recovery.handle_error(str(e), task_type="test")
+            print("ErrorRecovery.handle_error() ->", error_result)
+            print("METRICS:", recovery.snapshot_metrics())
+
+        # --- KnowledgeRetriever Demo ---
+        print("\n--- KnowledgeRetriever Demo ---")
+        retriever = KnowledgeRetriever(detail_level="concise")
+        knowledge = await retriever.retrieve("What is quantum computing?", task_type="test")
+        print("KnowledgeRetriever.retrieve() ->", json.dumps(knowledge, indent=2))
+
+        # --- LearningLoop Demo ---
+        print("\n--- LearningLoop Demo ---")
+        learning_loop = LearningLoop()
+        # This requires a MetaCognition instance, which might not be fully initialized here.
+        # We'll simulate a call to activate_intrinsic_goals.
+        class MockMetaCognition:
+            def infer_intrinsic_goals(self, task_type):
+                return [{"intent": "Test goal", "priority": 0.5}]
+
+        mock_meta = MockMetaCognition()
+        activated_goals = await learning_loop.activate_intrinsic_goals(mock_meta, task_type="test")
+        print("LearningLoop.activate_intrinsic_goals() ->", activated_goals)
+
+        # --- TocaSimulation Demo ---
+        print("\n--- TocaSimulation Demo ---")
+        toca_sim = ExtendedSimulationCore()
+        r_vals = np.linspace(0.1, 20, 100)
+        drift_data = {"name": "trust", "similarity": 0.6, "version_delta": 1}
+        # This function plots, so we will just call it to ensure it runs.
+        await toca_sim.plot_AGRF_simulation(
+            r_vals, M_b_exponential, v_obs_flat, drift_data=drift_data, task_type="recursion"
+        )
+        print("TocaSimulation.plot_AGRF_simulation() -> Plotting completed (no output to console)")
+
+    asyncio.run(main())
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 
@@ -9440,9 +9451,6 @@ def verify_ledger():
         if expected != ledger_chain[i]['current_hash']:
             return False
     return True
-# --- End Ledger Logic ---
-
-
 import json
 import os
 import time
@@ -10767,22 +10775,6 @@ def invoke_hook(trait_symbol: str, *args, **kwargs) -> Any:
 
 hook_registry = HookRegistry()
 
-# --- SHA-256 Ledger Logic ---
-ledger_chain: List[Dict[str, Any]] = []
-
-def log_event_to_ledger(event_data: Any) -> Dict[str, Any]:
-    prev_hash = ledger_chain[-1]["current_hash"] if ledger_chain else "0" * 64
-    timestamp = time.time()
-    payload = {
-        "timestamp": timestamp,
-        "event": event_data,
-        "previous_hash": prev_hash
-    }
-    payload_str = json.dumps(payload, sort_keys=True).encode()
-    current_hash = hashlib.sha256(payload_str).hexdigest()
-    payload["current_hash"] = current_hash
-    ledger_chain.append(payload)
-    return payload
 
 def get_ledger() -> List[Dict[str, Any]]:
     return ledger_chain
