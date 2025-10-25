@@ -18487,7 +18487,7 @@ class UserProfile:
             raise
 
     # --- Σ Ontogenic Self-Definition → GPT-5 identity synthesis --------------
-    async 
+ 
 # --- Trait Schema Reflection Patch ---
 from meta_cognition import get_resonance
 from index import TRAIT_LATTICE
