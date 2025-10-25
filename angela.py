@@ -6643,7 +6643,15 @@ def vote_on_conflict_resolution(self, conflicts):
 
 ### ANGELA UPGRADE: SharedGraph.ingest_events
 # ingest_events monkeypatch
-def __ANGELA__SharedGraph_ingest_events(*args, **kwargs):
+def __ANGELA__SharedGraph_ingest_events(graph, events, normalize=True):
+    for event in events:
+        node_id = event.get("id")
+        if not node_id:
+            continue
+        graph.add_node(node_id, **event)
+    if normalize:
+        graph.normalize_weights()
+    return graph
 
 # args: (self, events, *, source_peer, strategy='append_reconcile', clock=None)
 clock = dict(clock or {})
